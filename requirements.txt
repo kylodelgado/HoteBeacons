@@ -1,0 +1,2 @@
+awsiotsdk>=1.0.0
+awscrt>=0.19.0 

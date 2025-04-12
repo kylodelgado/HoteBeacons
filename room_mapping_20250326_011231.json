@@ -1,0 +1,21 @@
+{
+    "version": "1.0",
+    "export_date": "2025-03-26T01:12:31.842004",
+    "beacons": [
+        {
+            "mac_address": "D3:8D:48:10:63:3C",
+            "room_number": "6h",
+            "description": ""
+        },
+        {
+            "mac_address": "D6:20:31:E8:D8:1D",
+            "room_number": "87",
+            "description": ""
+        },
+        {
+            "mac_address": "ED:38:4C:1C:47:93",
+            "room_number": "8i",
+            "description": ""
+        }
+    ]
+}
