@@ -72,45 +72,56 @@ class BeaconDatabase:
         self.init_db()
 
     def init_db(self):
-        """Create database and tables if they don't exist"""
+        """Initialize the database with required tables"""
         try:
             self.conn = sqlite3.connect(self.db_path)
             self.cursor = self.conn.cursor()
 
-            # Create beacons table with expanded fields
-            self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS beacons (
-                id INTEGER PRIMARY KEY,
-                mac_address TEXT NOT NULL UNIQUE,
-                room_number TEXT NOT NULL,
-                description TEXT,
-                last_seen TEXT,
-                last_rssi INTEGER,
-                battery_level TEXT,
-                device_mode TEXT,
-                auxiliary_operation TEXT,
-                estimated_distance REAL,
-                is_charging BOOLEAN,
-                created_at TEXT
-            )
-            ''')
+            self.cursor.execute("""
+                CREATE TABLE IF NOT EXISTS beacons (
+                    id INTEGER PRIMARY KEY,
+                    mac_address TEXT NOT NULL UNIQUE,
+                    room_number TEXT NOT NULL,
+                    description TEXT,
+                    last_seen TEXT,
+                    last_rssi INTEGER,
+                    battery_level TEXT,
+                    device_mode TEXT,
+                    auxiliary_operation TEXT,
+                    estimated_distance REAL,
+                    is_charging BOOLEAN,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            
+            # Create index on mac_address for faster lookups
+            self.cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_beacons_mac 
+                ON beacons (mac_address)
+            """)
 
-            # Create activity log table
-            self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS activity_log (
-                id INTEGER PRIMARY KEY,
-                timestamp TEXT NOT NULL,
-                beacon_id INTEGER,
-                event_type TEXT NOT NULL,
-                details TEXT,
-                FOREIGN KEY (beacon_id) REFERENCES beacons (id)
-            )
-            ''')
+            # Check if columns exist and add them if they don't
+            columns_to_check = [
+                ('battery_level', 'TEXT'),
+                ('device_mode', 'TEXT'),
+                ('auxiliary_operation', 'TEXT'),
+                ('estimated_distance', 'REAL'),
+                ('is_charging', 'BOOLEAN')
+            ]
+            
+            for column, dtype in columns_to_check:
+                try:
+                    self.cursor.execute(f"ALTER TABLE beacons ADD COLUMN {column} {dtype}")
+                except sqlite3.OperationalError as e:
+                    if 'duplicate column name' in str(e).lower():
+                        continue  # Column already exists, skip
+                    else:
+                        raise e
 
             self.conn.commit()
-            print("Database initialized successfully")
+            print("Database initialized at", self.db_path)
         except sqlite3.Error as e:
-            print(f"Database error: {e}")
+            print(f"Error initializing database: {e}")
 
     def add_beacon(self, mac_address, room_number, description=""):
         """Add a new beacon to the database"""
