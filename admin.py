@@ -873,14 +873,6 @@ class CombinedApp:
         file_menu.add_separator()
         file_menu.add_command(label="Exit", command=self.on_exit)
 
-        # --- AWS Menu ---
-        aws_menu = tk.Menu(self.menu, tearoff=0)
-        self.menu.add_cascade(label="AWS", menu=aws_menu)
-        aws_menu.add_command(label="Connect", command=self.connect_to_aws)
-        aws_menu.add_command(label="Disconnect", command=self.disconnect_from_aws)
-        aws_menu.add_separator()
-        aws_menu.add_command(label="Check Connection", command=self.check_aws_connection)
-
         # --- History Menu ---
         history_menu = tk.Menu(self.menu, tearoff=0)
         self.menu.add_cascade(label="History", menu=history_menu)
@@ -900,7 +892,7 @@ class CombinedApp:
         # Check if already added to prevent duplicates
         if file_menu.index("end") > self.admin_settings_menu_index + 3: # Check if items were added
             return
-
+        
         # Insert admin items before the last separator
         file_menu.insert_command(self.admin_settings_menu_index + 1, label="Admin Dashboard", command=self.show_admin_dashboard)
         file_menu.insert_command(self.admin_settings_menu_index + 2, label="Beacon Management", command=self.show_beacon_management)
