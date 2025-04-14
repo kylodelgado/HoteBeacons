@@ -7,9 +7,10 @@ import threading
 import os
 import sys
 from datetime import datetime
-import tkinter as tk
-from tkinter import ttk, scrolledtext, messagebox, simpledialog
-import sqlite3
+# Removed tkinter imports as they are not used in this script version
+# import tkinter as tk
+# from tkinter import ttk, scrolledtext, messagebox, simpledialog
+import sqlite3 # Keep sqlite3 if DB interactions remain relevant to this script's purpose
 
 # Import AWS IoT SDK
 try:
@@ -18,307 +19,100 @@ try:
     AWS_IOT_AVAILABLE = True
 except ImportError:
     AWS_IOT_AVAILABLE = False
-    print("Warning: AWS IoT SDK not found. Install with 'pip install awsiotsdk' for LoRa connectivity.")
+    # Exit if SDK not found for this command-line script
+    print("Error: AWS IoT SDK not found. Install with 'pip install awsiotsdk'. Exiting.")
+    sys.exit(1) # Changed to exit if SDK is mandatory
 
-# Application constants
-APP_TITLE = "Hotel LoRa Beacon Management System"
-DB_NAME = "hotel_beacons.db"
-LOG_DIR = "logs"
-ADMIN_PASSWORD = "admin123"  # Simple password for demo purposes
-
-# Default AWS IoT Core settings
+# --- Constants ---
+# Using defaults from user-provided script where applicable
 DEFAULT_ENDPOINT = "a1zzy9gd1wmh90-ats.iot.us-east-1.amazonaws.com"
-DEFAULT_CERT_PATH = os.path.expanduser("~/certificates")
-DEFAULT_CLIENT_ID = "hotel-beacon-client"
+DEFAULT_CLIENT_ID = "mqtt-subscriber" # From user script args
 DEFAULT_TOPIC = "#"
 
-# Room mapping and history files
-CONFIG_DIR = os.path.join(os.path.expanduser("~"), "hotel_beacon_config")
-room_mapping_file = os.path.join(CONFIG_DIR, "room_mapping.json")
-alarm_history_file = os.path.join(CONFIG_DIR, "alarm_history.json")
-settings_file = os.path.join(CONFIG_DIR, "settings.json")
+# --- Helper Functions ---
 
-# Ensure config directory exists
-if not os.path.exists(CONFIG_DIR):
-    os.makedirs(CONFIG_DIR)
+# Added estimate_distance function provided by user
+def estimate_distance(rssi, measured_power=-65, n=2.5):
+    """
+    Estimate distance based on RSSI value using path loss model
+    rssi: Received signal strength in dBm
+    measured_power: RSSI at 1 meter distance (calibration value)
+    n: Environmental factor (2 for free space, 2.5-4 for indoor)
+    """
+    try:
+        # Extract RSSI numeric value if it's in string format
+        if isinstance(rssi, str) and "dBm" in rssi:
+            rssi = int(rssi.split()[0])
 
-# Default settings
-DEFAULT_SETTINGS = {
-    "aws_endpoint": DEFAULT_ENDPOINT,
-    "cert_file": os.path.join(DEFAULT_CERT_PATH, "certificate.pem.crt"),
-    "key_file": os.path.join(DEFAULT_CERT_PATH, "private.pem.key"),
-    "root_ca": os.path.join(DEFAULT_CERT_PATH, "AmazonRootCA1.pem"),
-    "client_id": DEFAULT_CLIENT_ID,
-    "topic": DEFAULT_TOPIC,
-    "alert_interval": 15,  # seconds between alerts
-    "port": 8883,
-    "scan_interval": 5  # seconds between scans
-}
+        # Ensure rssi is a number before proceeding
+        if not isinstance(rssi, (int, float)):
+             return "N/A" # Return N/A if RSSI is not valid
 
-class BeaconDatabase:
-    """Database manager for storing beacon information"""
-    
-    def __init__(self, db_path=DB_NAME):
-        """Initialize the database connection"""
-        self.db_path = db_path
-        self.conn = None
-        self.cursor = None
-        self.init_db()
-        
-    def init_db(self):
-        """Create database and tables if they don't exist"""
-        try:
-            self.conn = sqlite3.connect(self.db_path)
-            self.cursor = self.conn.cursor()
-            
-            # Create beacons table
-            self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS beacons (
-                id INTEGER PRIMARY KEY,
-                mac_address TEXT NOT NULL UNIQUE,
-                room_number TEXT NOT NULL,
-                description TEXT,
-                last_seen TEXT,
-                last_rssi INTEGER,
-                created_at TEXT
-            )
-            ''')
-            
-            # Create activity log table
-            self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS activity_log (
-                id INTEGER PRIMARY KEY,
-                timestamp TEXT NOT NULL,
-                beacon_id INTEGER,
-                event_type TEXT NOT NULL,
-                details TEXT,
-                FOREIGN KEY (beacon_id) REFERENCES beacons (id)
-            )
-            ''')
-            
-            self.conn.commit()
-            print("Database initialized successfully")
-        except sqlite3.Error as e:
-            print(f"Database error: {e}")
-    
-    def add_beacon(self, mac_address, room_number, description=""):
-        """Add a new beacon to the database"""
-        try:
-            current_time = datetime.now().isoformat()
-            self.cursor.execute(
-                "INSERT INTO beacons (mac_address, room_number, description, created_at) VALUES (?, ?, ?, ?)",
-                (mac_address, room_number, description, current_time)
-            )
-            self.conn.commit()
-            return True
-        except sqlite3.IntegrityError:
-            # MAC address already exists
-            return False
-        except sqlite3.Error as e:
-            print(f"Error adding beacon: {e}")
-            return False
-    
-    def update_beacon(self, beacon_id, room_number=None, description=None):
-        """Update beacon information"""
-        try:
-            if room_number and description:
-                self.cursor.execute(
-                    "UPDATE beacons SET room_number = ?, description = ? WHERE id = ?",
-                    (room_number, description, beacon_id)
-                )
-            elif room_number:
-                self.cursor.execute(
-                    "UPDATE beacons SET room_number = ? WHERE id = ?",
-                    (room_number, beacon_id)
-                )
-            elif description:
-                self.cursor.execute(
-                    "UPDATE beacons SET description = ? WHERE id = ?",
-                    (description, beacon_id)
-                )
-            self.conn.commit()
-            return True
-        except sqlite3.Error as e:
-            print(f"Error updating beacon: {e}")
-            return False
-    
-    def delete_beacon(self, beacon_id):
-        """Delete a beacon from the database"""
-        try:
-            self.cursor.execute("DELETE FROM beacons WHERE id = ?", (beacon_id,))
-            self.conn.commit()
-            return True
-        except sqlite3.Error as e:
-            print(f"Error deleting beacon: {e}")
-            return False
-    
-    def get_all_beacons(self):
-        """Get all beacons from the database"""
-        try:
-            self.cursor.execute("SELECT * FROM beacons ORDER BY room_number")
-            return self.cursor.fetchall()
-        except sqlite3.Error as e:
-            print(f"Error getting beacons: {e}")
-            return []
-    
-    def get_beacon_by_mac(self, mac_address):
-        """Get a beacon by MAC address"""
-        try:
-            self.cursor.execute("SELECT * FROM beacons WHERE mac_address = ?", (mac_address,))
-            return self.cursor.fetchone()
-        except sqlite3.Error as e:
-            print(f"Error getting beacon: {e}")
-            return None
-    
-    def get_beacon_by_id(self, beacon_id):
-        """Get a beacon by ID"""
-        try:
-            self.cursor.execute("SELECT * FROM beacons WHERE id = ?", (beacon_id,))
-            return self.cursor.fetchone()
-        except sqlite3.Error as e:
-            print(f"Error getting beacon: {e}")
-            return None
-    
-    def update_beacon_signal(self, mac_address, rssi):
-        """Update beacon's last seen time and RSSI"""
-        try:
-            current_time = datetime.now().isoformat()
-            self.cursor.execute(
-                "UPDATE beacons SET last_seen = ?, last_rssi = ? WHERE mac_address = ?",
-                (current_time, rssi, mac_address)
-            )
-            self.conn.commit()
-            return True
-        except sqlite3.Error as e:
-            print(f"Error updating beacon signal: {e}")
-            return False
-    
-    def log_activity(self, event_type, details, beacon_id=None):
-        """Log beacon-related activity"""
-        try:
-            current_time = datetime.now().isoformat()
-            self.cursor.execute(
-                "INSERT INTO activity_log (timestamp, beacon_id, event_type, details) VALUES (?, ?, ?, ?)",
-                (current_time, beacon_id, event_type, details)
-            )
-            self.conn.commit()
-            return True
-        except sqlite3.Error as e:
-            print(f"Error logging activity: {e}")
-            return False
-    
-    def get_recent_logs(self, limit=100):
-        """Get recent activity logs"""
-        try:
-            self.cursor.execute("""
-                SELECT l.timestamp, b.room_number, b.mac_address, l.event_type, l.details 
-                FROM activity_log l 
-                LEFT JOIN beacons b ON l.beacon_id = b.id 
-                ORDER BY l.timestamp DESC 
-                LIMIT ?
-            """, (limit,))
-            return self.cursor.fetchall()
-        except sqlite3.Error as e:
-            print(f"Error getting logs: {e}")
-            return []
-    
-    def close(self):
-        """Close the database connection"""
-        if self.conn:
-            self.conn.close()
+        # Calculate distance using path loss formula
+        # Prevent division by zero or log of non-positive if rssi == measured_power
+        if rssi == measured_power:
+             return 1.0 # Assume 1 meter if RSSI matches measured power at 1m
 
-class SettingsManager:
-    """Manages application settings"""
-    
-    def __init__(self, settings_file=settings_file):
-        """Initialize settings manager"""
-        self.settings_file = settings_file
-        self.settings = DEFAULT_SETTINGS.copy()
-        self.load_settings()
-    
-    def load_settings(self):
-        """Load settings from file"""
-        if os.path.exists(self.settings_file):
-            try:
-                with open(self.settings_file, 'r') as f:
-                    loaded_settings = json.load(f)
-                    # Update settings with loaded values
-                    self.settings.update(loaded_settings)
-            except json.JSONDecodeError:
-                print("Error: Settings file is corrupted. Using defaults.")
-            except Exception as e:
-                print(f"Error loading settings: {e}")
-        else:
-            # Save default settings
-            self.save_settings()
-    
-    def save_settings(self):
-        """Save settings to file"""
-        try:
-            with open(self.settings_file, 'w') as f:
-                json.dump(self.settings, f, indent=4)
-            return True
-        except Exception as e:
-            print(f"Error saving settings: {e}")
-            return False
-    
-    def get(self, key, default=None):
-        """Get a setting value"""
-        return self.settings.get(key, default)
-    
-    def set(self, key, value):
-        """Set a setting value"""
-        self.settings[key] = value
-        self.save_settings()
+        ratio = (measured_power - rssi) / (10 * n)
+        # Avoid potential math errors (e.g., overflow with very large positive ratio)
+        if ratio > 70: # exp(70*ln(10)) is already huge
+            return "Infinite"
+        distance = pow(10, ratio)
+        return round(distance, 2)
+    except Exception as e:
+        print(f"Error calculating distance for RSSI {rssi}: {e}") # Log error
+        return "Error" # Indicate calculation error
+
+# --- LoRa Client Class ---
+# Simplified for the subscriber script context, keeping the updated decoder
 
 class LoRaClient:
     """Handles communication with AWS IoT Core for LoRaWAN"""
-    
-    def __init__(self, settings, message_callback=None):
+
+    def __init__(self, endpoint, cert, key, root_ca, client_id, topic, message_callback=None):
         """Initialize the LoRa client"""
-        self.settings = settings
+        self.endpoint = endpoint
+        self.cert_file = cert
+        self.key_file = key
+        self.root_ca = root_ca
+        self.client_id = client_id
+        self.topic = topic
         self.message_callback = message_callback
         self.mqtt_connection = None
         self.connected = False
-        self.beacons = {}  # Store detected beacons
-    
+
     def connect(self):
         """Connect to AWS IoT Core"""
-        if not AWS_IOT_AVAILABLE:
-            print("AWS IoT SDK not available. Cannot connect.")
-            return False
-        
+        if not AWS_IOT_AVAILABLE: return False # Already checked, but good practice
+
         try:
-            # Set up connection to AWS IoT Core
             event_loop_group = io.EventLoopGroup(1)
             host_resolver = io.DefaultHostResolver(event_loop_group)
             client_bootstrap = io.ClientBootstrap(event_loop_group, host_resolver)
-            
+
             self.mqtt_connection = mqtt_connection_builder.mtls_from_path(
-                endpoint=self.settings.get("aws_endpoint"),
-                cert_filepath=self.settings.get("cert_file"),
-                pri_key_filepath=self.settings.get("key_file"),
+                endpoint=self.endpoint,
+                cert_filepath=self.cert_file,
+                pri_key_filepath=self.key_file,
                 client_bootstrap=client_bootstrap,
-                ca_filepath=self.settings.get("root_ca"),
-                client_id=self.settings.get("client_id"),
+                ca_filepath=self.root_ca,
+                client_id=self.client_id,
                 on_connection_interrupted=self._on_connection_interrupted,
                 on_connection_resumed=self._on_connection_resumed,
                 clean_session=False,
                 keep_alive_secs=30
             )
-            
-            print(f"Connecting to {self.settings.get('aws_endpoint')} with client ID '{self.settings.get('client_id')}'...")
+
+            print(f"Connecting to {self.endpoint} with client ID '{self.client_id}'...")
             connect_future = self.mqtt_connection.connect()
-            
-            # Wait for connection to complete
-            connect_future.result()
+            connect_future.result() # Wait for connection
             self._on_connection_success(self.mqtt_connection, None)
             self.connected = True
             return True
         except Exception as e:
             print(f"Error connecting to AWS IoT: {e}")
             return False
-    
+
     def disconnect(self):
         """Disconnect from AWS IoT Core"""
         if self.mqtt_connection and self.connected:
@@ -332,120 +126,298 @@ class LoRaClient:
                 print(f"Error disconnecting: {e}")
                 return False
         return True
-    
+
     def _on_connection_interrupted(self, connection, error, **kwargs):
-        """Handle connection interruption"""
         print(f"Connection interrupted. error: {error}")
         self.connected = False
-    
+
     def _on_connection_resumed(self, connection, return_code, session_present, **kwargs):
-        """Handle connection resumption"""
         print(f"Connection resumed. return_code: {return_code} session_present: {session_present}")
         self.connected = True
-    
+        if not session_present:
+             print("Re-subscribing...")
+             self._subscribe()
+
     def _on_connection_success(self, connection, callback_data):
-        """Handle successful connection"""
         print("Connection established!")
-        print(f"Subscribing to topic: {self.settings.get('topic')}")
-        connection.subscribe(
-            topic=self.settings.get('topic'),
+        self._subscribe()
+
+    def _subscribe(self):
+        if not self.mqtt_connection: return
+        print(f"Subscribing to topic: {self.topic}")
+        subscribe_future, packet_id = self.mqtt_connection.subscribe(
+            topic=self.topic,
             qos=mqtt.QoS.AT_LEAST_ONCE,
-            callback=self._on_message_received
+            callback=self._on_message_received # Route to the internal callback
         )
-    
+        subscribe_result = subscribe_future.result()
+        print(f"Subscribed with {str(subscribe_result['qos'])}")
+
+
     def _on_message_received(self, topic, payload, dup, qos, retain, **kwargs):
-        """Handle message received from AWS IoT Core"""
+        """Internal message handler that decodes and calls the external callback"""
         try:
-            # Parse JSON message
-            message = json.loads(payload.decode())
-            
-            # Get FPort for filtering
+            message = json.loads(payload.decode('utf-8'))
             fport = None
             if "WirelessMetadata" in message and "LoRaWAN" in message["WirelessMetadata"]:
                 fport = message["WirelessMetadata"]["LoRaWAN"].get("FPort")
-            
-            # Process payload if available
+
+            decoded_payload = {}
             if "PayloadData" in message:
                 payload_data = message["PayloadData"]
-                
-                # Call the message callback with the decoded data
-                if self.message_callback:
-                    self.message_callback(topic, message, self._decode_lw004_pb_payload(payload_data, fport))
+                # Use the updated decoder function (now part of the class)
+                decoded_payload = self._decode_lw004_pb_payload(payload_data, fport)
+
+            # Call the external message callback provided during init
+            if self.message_callback:
+                self.message_callback(topic, message, decoded_payload)
+
+        except json.JSONDecodeError:
+            print(f"Error decoding JSON payload on topic '{topic}': {payload.decode('utf-8', errors='ignore')}")
         except Exception as e:
-            print(f"Error processing message: {str(e)}")
-    
+            print(f"Error processing message on topic '{topic}': {str(e)}")
+
+    # --- Updated Decoder Function (from user input) ---
     def _decode_lw004_pb_payload(self, payload_data, fport):
         """
         Decode LW004-PB payload from Base64 encoded string
+        (Incorporates user-provided logic)
         """
         # Decode Base64 payload
         try:
             binary_data = base64.b64decode(payload_data)
-        except:
-            return {"error": "Invalid Base64 payload"}
-        
+        except Exception as e:
+            return {"error": f"Invalid Base64 payload: {e}"}
+
         # Create result dictionary
         result = {
             "raw_hex": binary_data.hex()
         }
-        
-        # Check if we have enough data to parse
+
+        # Check if we have enough data to parse header
         if len(binary_data) < 4:
-            return {"error": "Payload too short", "raw_hex": binary_data.hex()}
-        
-        # Extract battery level from first byte (7 bits, ignore MSB which is charging flag)
-        battery_level = binary_data[0] & 0x7F
-        
-        # Add battery level to result
-        result["battery_level"] = battery_level
-        
+            result["error"] = "Payload too short for header"
+            return result
+
+        # --- Header Parsing ---
+        try:
+            # Byte 0: Battery Level and Charging Status
+            result["battery_level"] = binary_data[0] & 0x7F
+            result["is_charging"] = (binary_data[0] & 0x80) > 0
+            result["battery"] = f"{result['battery_level']}%" + (" (Charging)" if result["is_charging"] else "")
+
+            # Byte 1: Device Mode and Auxiliary Operation
+            device_status = binary_data[1]
+            device_mode_code = (device_status >> 4) & 0x0F
+            auxiliary_op_code = device_status & 0x0F
+
+            device_modes = {
+                1: "Standby Mode", 2: "Timing Mode", 3: "Periodic Mode",
+                4: "Stationary in Motion Mode", 5: "Start of Movement",
+                6: "In Movement", 7: "End of Movement"
+            }
+            aux_operations = {
+                0: "None", 1: "Downlink for Position", 2: "Man Down Status",
+                3: "Alert Alarm", 4: "SOS Alarm"
+            }
+
+            result["device_mode_code"] = device_mode_code
+            result["auxiliary_operation_code"] = auxiliary_op_code
+            result["device_mode"] = device_modes.get(device_mode_code, f"Unknown ({device_mode_code})")
+            result["auxiliary_operation"] = aux_operations.get(auxiliary_op_code, f"Unknown ({auxiliary_op_code})")
+
+            # Bytes 2-3: Age (seconds)
+            result["age"] = int.from_bytes(binary_data[2:4], byteorder='big')
+
+        except IndexError:
+             result["error"] = "Payload length error during header parsing."
+             return result
+        except Exception as e:
+             result["error"] = f"Header parsing error: {e}"
+             return result
+
+
+        # --- FPort Specific Processing ---
+        try:
+            if fport in [8, 12]:  # Bluetooth Location Fixed Payload
+                beacons = []
+                offset = 4  # Start after header
+                beacon_count = 0
+                while offset + 7 <= len(binary_data) and beacon_count < 3:
+                    # Extract MAC address (6 bytes)
+                    mac_bytes = binary_data[offset:offset+6]
+                    mac_address = ':'.join(f'{b:02X}' for b in mac_bytes)
+
+                    # Extract RSSI (1 byte)
+                    rssi_byte = binary_data[offset+6]
+                    rssi = rssi_byte - 256 if rssi_byte > 127 else rssi_byte
+
+                    # Add beacon info to the list
+                    beacons.append({
+                        "mac": mac_address,
+                        "rssi": f"{rssi} dBm",
+                        "rssi_value": rssi  # Keep raw value
+                    })
+
+                    offset += 7
+                    beacon_count += 1
+
+                result["beacons"] = beacons
+                result["beacon_count"] = len(beacons)
+
+            elif fport in [9, 13]:  # Bluetooth Location Failure Payload
+                if len(binary_data) >= 5:
+                    failure_code = binary_data[4]
+                    failure_reasons = {
+                        1: "Hardware Error", 2: "Interrupted by Downlink for Position",
+                        3: "Interrupted by Man Down Detection", 4: "Interrupted by Alarm function",
+                        5: "Bluetooth positioning timeout", 6: "Bluetooth broadcasting in progress",
+                        7: "Interrupted positioning at end of movement",
+                        8: "Interrupted positioning at start of movement",
+                        9: "GPS PDOP Limit", 10: "Other reason"
+                    }
+                    result["failure_reason_code"] = failure_code
+                    result["failure_reason"] = failure_reasons.get(failure_code, f"Unknown ({failure_code})")
+
+            elif fport == 1:  # Event Message Payload
+                if len(binary_data) >= 7:
+                    # Byte 2: Time Zone
+                    time_zone_byte = binary_data[2]
+                    time_zone_offset_half_hours = time_zone_byte if time_zone_byte < 128 else time_zone_byte - 256
+                    time_zone_value = time_zone_offset_half_hours / 2.0
+                    result["time_zone"] = f"UTC{'+' if time_zone_value >= 0 else ''}{time_zone_value:.1f}"
+
+                    # Bytes 3-6: Timestamp (Unix epoch)
+                    timestamp = int.from_bytes(binary_data[3:7], byteorder='big')
+                    result["timestamp"] = timestamp
+                    try:
+                        result["timestamp_utc"] = datetime.utcfromtimestamp(timestamp).isoformat() + "Z"
+                    except ValueError:
+                        result["timestamp_utc"] = "Invalid Timestamp"
+
+
+                    # Byte 7: Event Type Code (if present)
+                    if len(binary_data) >= 8:
+                        event_code = binary_data[7]
+                        event_types = {
+                            0: "Start of movement", 1: "In movement", 2: "End of movement",
+                            3: "Start SOS alarm", 4: "SOS alarm exit", 5: "Start Alert alarm",
+                            6: "Alert alarm exit", 7: "Man Down start", 8: "Man Down end"
+                        }
+                        result["event_type_code"] = event_code
+                        result["event_type"] = event_types.get(event_code, f"Unknown ({event_code})")
+
+        except IndexError:
+             result["warning"] = "Payload ended unexpectedly during FPort-specific parsing."
+        except Exception as e:
+             result["warning"] = f"Error parsing FPort-specific data: {e}"
+
         return result
 
+# --- Main Execution Logic ---
 if __name__ == "__main__":
     # Parse command line arguments
-    parser = argparse.ArgumentParser(description="Hotel LoRa Beacon Management System")
-    parser.add_argument('--cert', required=True, help="Path to the certificate file")
-    parser.add_argument('--key', required=True, help="Path to the private key file")
-    parser.add_argument('--root-ca', required=True, help="Path to the root CA file")
-    parser.add_argument('--endpoint', default=DEFAULT_ENDPOINT, help="AWS IoT endpoint")
+    parser = argparse.ArgumentParser(description="AWS IoT MQTT Subscriber for LoRa Beacons")
+    parser.add_argument('--ports', type=str, default=None,
+                        help="Comma-separated list of FPorts to show (e.g., '12,8'). Default: show all")
+    parser.add_argument('--endpoint', default=DEFAULT_ENDPOINT,
+                        help=f"Your AWS IoT custom endpoint (default: {DEFAULT_ENDPOINT})")
+    # Make certs optional for flexibility, but LoRaClient checks them
+    parser.add_argument('--cert', default=None, help="File path to your device certificate")
+    parser.add_argument('--key', default=None, help="File path to your private key")
+    parser.add_argument('--root-ca', default=None, help="File path to root CA certificate")
     parser.add_argument('--client-id', default=DEFAULT_CLIENT_ID, help="MQTT client ID")
-    parser.add_argument('--topic', default=DEFAULT_TOPIC, help="MQTT topic to subscribe to")
-    parser.add_argument('--verbose', action='store_true', help="Enable verbose output")
+    parser.add_argument('--topic', default=DEFAULT_TOPIC, help="MQTT topic to subscribe to (default: '#')")
+    parser.add_argument('--verbose', action='store_true', default=True, help="Increase output verbosity (default: enabled)") # Kept default true as per user script
     args = parser.parse_args()
 
-    # Initialize settings
-    settings = SettingsManager()
-    settings.settings.update({
-        "aws_endpoint": args.endpoint,
-        "cert_file": args.cert,
-        "key_file": args.key,
-        "root_ca": args.root_ca,
-        "client_id": args.client_id,
-        "topic": args.topic
-    })
+    # Validate required arguments for connection
+    if not all([args.cert, args.key, args.root_ca]):
+         parser.error("--cert, --key, and --root-ca are required for mTLS connection.")
 
-    # Initialize database
-    db = BeaconDatabase()
+    # --- Message Callback Function ---
+    def on_message_received_callback(topic, message, decoded_payload):
+        """Callback function to process and print received messages"""
+        # Filter by FPort if specified
+        fport = None
+        if "WirelessMetadata" in message and "LoRaWAN" in message["WirelessMetadata"]:
+            fport = message["WirelessMetadata"]["LoRaWAN"].get("FPort")
 
-    # Define message callback
-    def message_callback(topic, message, decoded_payload):
+        if args.ports is not None:
+            try:
+                allowed_ports = [int(port.strip()) for port in args.ports.split(',')]
+                if fport is None or fport not in allowed_ports:
+                    return # Skip message if FPort doesn't match
+            except ValueError:
+                print(f"Warning: Invalid --ports argument '{args.ports}'. Showing all ports.")
+
+
+        # Print detailed output
+        print("\n----- New Message -----")
+        print(f"Topic: {topic}")
         if args.verbose:
-            print(f"Topic: {topic}")
-            print(f"Message: {json.dumps(message, indent=2)}")
-            print(f"Decoded payload: {json.dumps(decoded_payload, indent=2)}")
-            print("-" * 80)
+            print(f"Full Message: {json.dumps(message, indent=2)}")
 
-    # Initialize and connect LoRa client
-    client = LoRaClient(settings, message_callback=message_callback)
+        # Print LoRaWAN Metadata
+        if "WirelessMetadata" in message and "LoRaWAN" in message["WirelessMetadata"]:
+            lorawan = message["WirelessMetadata"]["LoRaWAN"]
+            print("\n----- LoRaWAN Metadata -----")
+            print(f"DevEui: {lorawan.get('DevEui', 'N/A')}")
+            print(f"FPort: {lorawan.get('FPort', 'N/A')}")
+            print(f"FCnt: {lorawan.get('FCnt', 'N/A')}")
+            print(f"Timestamp: {lorawan.get('Timestamp', 'N/A')}")
+            if "Gateways" in lorawan and lorawan["Gateways"]:
+                for gateway in lorawan["Gateways"]:
+                    print(f"  Gateway: {gateway.get('GatewayEui', 'N/A')}, RSSI: {gateway.get('Rssi', 'N/A')}, SNR: {gateway.get('Snr', 'N/A')}")
+
+        # Print Decoded Payload Details
+        print("\n----- Decoded Payload -----")
+        if "error" in decoded_payload:
+            print(f"Error: {decoded_payload['error']}")
+            if "raw_hex" in decoded_payload: print(f"Raw Hex: {decoded_payload['raw_hex']}")
+        elif not decoded_payload:
+            print("No payload data to decode.")
+        else:
+            # Print general decoded fields
+            for key, value in decoded_payload.items():
+                if key not in ["raw_hex", "beacons"]: # Print everything except raw hex and the beacons list itself
+                    print(f"{key.replace('_', ' ').title()}: {value}")
+
+            # Special formatting for detected beacons
+            if "beacons" in decoded_payload and decoded_payload["beacons"]:
+                print("\n📡 BEACONS DETECTED 📡")
+                for i, beacon in enumerate(decoded_payload["beacons"]):
+                    rssi_val = beacon.get("rssi_value")
+                    dist_str = estimate_distance(rssi_val)
+                    dist_str = f"{dist_str} meters" if isinstance(dist_str, (float, int)) else dist_str # Add units
+                    print(f"  Beacon {i+1}: MAC={beacon.get('mac')}, RSSI={beacon.get('rssi')}, Est. Dist={dist_str}")
+
+            # Special formatting for failure
+            elif "failure_reason" in decoded_payload:
+                print(f"\n❌ Beacon Detection Failed: {decoded_payload.get('failure_reason')}")
+
+        print("-" * 50) # Separator
+
+    # --- Initialize and Connect ---
+    client = LoRaClient(
+        endpoint=args.endpoint,
+        cert=args.cert,
+        key=args.key,
+        root_ca=args.root_ca,
+        client_id=args.client_id,
+        topic=args.topic,
+        message_callback=on_message_received_callback
+    )
+
     if client.connect():
+        print("Subscriber connected and waiting for messages...")
+        # Keep the main thread alive
         try:
-            # Keep the main thread alive
             while True:
                 time.sleep(1)
         except KeyboardInterrupt:
             print("\nDisconnecting...")
             client.disconnect()
-            db.close()
-            print("Goodbye!")
+            print("Disconnected!")
     else:
-        print("Failed to connect to AWS IoT Core. Please check your credentials and try again.")
+        print("Failed to connect to AWS IoT Core.")
