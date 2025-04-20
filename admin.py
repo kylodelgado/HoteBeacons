@@ -6,7 +6,7 @@ import argparse
 import threading
 import os
 import sys
-from datetime import datetime, timezone # Added timezone for python 3.11+ compatibility
+from datetime import datetime, timezone 
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox, simpledialog, filedialog
 import sqlite3
@@ -66,7 +66,7 @@ class BeaconDatabase:
     """Database manager for storing beacon information"""
 
     def __init__(self, db_path=DB_NAME):
-        """Initialize the database connection"""
+        """Initialize the database"""
         self.db_path = db_path
         self.conn = None
         self.cursor = None
