@@ -10,6 +10,7 @@ from datetime import datetime, timezone # Added timezone for python 3.11+ compat
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox, simpledialog, filedialog
 import sqlite3
+import uuid
 
 # Import AWS IoT SDK
 try:
@@ -461,27 +462,35 @@ class LoRaClient:
         self.connected = False
         self.is_connecting = False # Flag to prevent multiple connect attempts
 
+        # Inside the LoRaClient class in admin.py
+
     def connect(self):
-        """Connect to AWS IoT Core"""
+        """Connect to AWS IoT Core using a unique Client ID"""
+        # Ensure AWS SDK is available
         if not AWS_IOT_AVAILABLE:
             print("AWS IoT SDK not available. Cannot connect.")
+            # Consider showing a message box here if appropriate for your UI flow
+            # messagebox.showerror("SDK Error", "AWS IoT SDK not available.", parent=...)
             return False
+
+        # Prevent concurrent connection attempts or connecting if already connected
         if self.connected or self.is_connecting:
             print("Already connected or connection in progress.")
             return self.connected
 
-        # Check required settings from SettingsManager
+        # --- Get Required Settings ---
         endpoint = self.settings_manager.get("aws_endpoint")
         cert_file = self.settings_manager.get("cert_file")
         key_file = self.settings_manager.get("key_file")
         root_ca = self.settings_manager.get("root_ca")
-        client_id = self.settings_manager.get("client_id")
+        # Get the base client ID from settings
+        base_client_id = self.settings_manager.get("client_id", DEFAULT_CLIENT_ID) # Fetch base ID
 
-        if not all([endpoint, cert_file, key_file, root_ca, client_id]):
+        # --- Validate Settings and File Paths ---
+        if not all([endpoint, cert_file, key_file, root_ca, base_client_id]):
             print("Error: Incomplete AWS IoT connection settings.")
             messagebox.showerror("Connection Error", "AWS IoT settings are incomplete. Please configure them via Admin Settings.")
             return False
-
         if not os.path.exists(cert_file):
             print(f"Error: Certificate file not found: {cert_file}")
             messagebox.showerror("Connection Error", f"Certificate file not found:\n{cert_file}\nPlease check Admin Settings.")
@@ -495,42 +504,84 @@ class LoRaClient:
              messagebox.showerror("Connection Error", f"Root CA file not found:\n{root_ca}\nPlease check Admin Settings.")
              return False
 
+        # --- Start Connection Process ---
         self.is_connecting = True
         try:
-            # Set up connection to AWS IoT Core
+            # --- Setup CRT Resources ---
             event_loop_group = io.EventLoopGroup(1)
             host_resolver = io.DefaultHostResolver(event_loop_group)
             client_bootstrap = io.ClientBootstrap(event_loop_group, host_resolver)
 
+            # --- Generate Unique Client ID ---
+            # Ensure base_client_id length allows for appending UUID within MQTT limits (e.g., 128 chars)
+            # Max MQTT ID length (check AWS docs, often 128) minus hyphen (1) minus UUID hex length (36)
+            max_base_len = 128 - 1 - 36
+            if len(base_client_id) > max_base_len:
+                print(f"Warning: Base client ID '{base_client_id}' too long, truncating.")
+                base_client_id = base_client_id[:max_base_len]
+            # Append a unique UUID to the base client ID
+            unique_client_id = f"{base_client_id}-{uuid.uuid4()}"
+            # --- End Unique Client ID Generation ---
+
+            print(f"Attempting to connect to {endpoint} with unique client ID '{unique_client_id}'...")
+
+            # --- Build MQTT Connection ---
             self.mqtt_connection = mqtt_connection_builder.mtls_from_path(
                 endpoint=endpoint,
                 cert_filepath=cert_file,
                 pri_key_filepath=key_file,
                 client_bootstrap=client_bootstrap,
                 ca_filepath=root_ca,
-                client_id=client_id,
+                client_id=unique_client_id, # Use the generated unique client ID
                 on_connection_interrupted=self._on_connection_interrupted,
                 on_connection_resumed=self._on_connection_resumed,
-                clean_session=False,
-                keep_alive_secs=30
+                # If you add an explicit on_success callback:
+                # on_connection_success=self._on_connection_success,
+                clean_session=False, # Keep session state on disconnect
+                keep_alive_secs=30   # Send keep-alive ping every 30 seconds
             )
 
-            print(f"Connecting to {endpoint} with client ID '{client_id}'...")
+            # --- Initiate Connection ---
             connect_future = self.mqtt_connection.connect()
 
-            # Wait for connection to complete
-            connect_future.result()
-            self._on_connection_success(self.mqtt_connection, None)
-            self.connected = True
+            # Wait for connection attempt to complete (blocks this thread)
+            connect_result = connect_future.result()
+            print(f"Connection attempt result: {connect_result}") # Log the result
+
+            # --- Handle Connection Success ---
+            # Note: Successful connection implicitly calls _on_connection_resumed
+            # if clean_session=False and session exists, or triggers a new session.
+            # Explicit success handling might be needed depending on SDK version nuances
+            # or if you need actions ONLY on the *very first* successful connect.
+            # For simplicity here, we rely on the state flags and resume callback.
+
+            self.connected = True # Assume connected if no exception was raised by .result()
             print("Successfully connected to AWS IoT Core.")
-            return True
+
+            # Reset reconnect attempts if implementing auto-reconnect logic
+            if hasattr(self, 'reconnect_attempts'):
+                 self.reconnect_attempts = 0
+
+            # Subscribe to topics after successful connection
+            # Note: _on_connection_resumed also handles re-subscription if needed
+            self._subscribe_to_topics(self.mqtt_connection)
+
+            return True # Indicate successful connection
+
         except Exception as e:
+            # --- Handle Connection Failure ---
             print(f"Error connecting to AWS IoT: {e}")
+            # Use traceback to get more details for debugging
+            import traceback
+            print(traceback.format_exc())
             messagebox.showerror("Connection Error", f"Failed to connect to AWS IoT:\n{e}")
             self.connected = False
-            return False
+            self.mqtt_connection = None # Ensure connection object is cleared on failure
+            return False # Indicate failed connection
         finally:
-             self.is_connecting = False
+            # --- Cleanup ---
+             self.is_connecting = False # Allow new connection attempts
+
 
     def disconnect(self):
         """Disconnect from AWS IoT Core"""
