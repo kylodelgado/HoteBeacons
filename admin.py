@@ -6,11 +6,29 @@ import argparse
 import threading
 import os
 import sys
+import socket
+import tempfile
 from datetime import datetime, timezone 
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox, simpledialog, filedialog
 import sqlite3
 import uuid
+from PIL import Image, ImageTk  # Add this import for system tray icon
+
+# Global variable to store the socket
+_instance_socket = None
+
+# Check if another instance is already running
+def is_already_running():
+    global _instance_socket
+    try:
+        # Try to create a socket on a specific port
+        _instance_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        _instance_socket.bind(('localhost', 12345))
+        return False
+    except socket.error:
+        # If we can't bind to the port, another instance is running
+        return True
 
 # Import AWS IoT SDK
 try:
@@ -24,8 +42,10 @@ except ImportError:
 # --- Constants ---
 APP_TITLE = "Beacon Alert and Management System"
 APP_VERSION = "2.0" # Combined version
-DB_NAME = "hotel_beacons.db"
-LOG_DIR = "logs"
+# Use AppData folder for database
+DB_NAME = os.path.join(os.path.expanduser("~"), "AppData", "Local", "HotelBeacons", "hotel_beacons.db")
+# Use AppData folder for logs
+LOG_DIR = os.path.join(os.path.expanduser("~"), "AppData", "Local", "HotelBeacons", "logs")
 DEFAULT_ADMIN_PASSWORD = "0000" # Default password as requested
 
 # Default AWS IoT Core settings (Consider moving to SettingsManager)
@@ -36,7 +56,7 @@ DEFAULT_TOPIC = "#"
 DEFAULT_ALERT_TOPIC = "beacon/alerts" # From client.py
 
 # Config directories and files (Consolidated)
-CONFIG_DIR = os.path.join(os.path.expanduser("~"), "beacon_system_config")
+CONFIG_DIR = os.path.join(os.path.expanduser("~"), "AppData", "Local", "HotelBeacons", "config")
 SETTINGS_FILE = os.path.join(CONFIG_DIR, "settings.json") # Using admin.py's settings file
 ALARM_HISTORY_FILE = os.path.join(CONFIG_DIR, "alarm_history.json") # Using client.py's history file
 
@@ -844,6 +864,9 @@ class CombinedApp:
         self.admin_logged_in = False
         self.current_admin_password = DEFAULT_ADMIN_PASSWORD # Store password in memory
 
+        # --- System Tray ---
+        self.setup_system_tray()
+        
         # --- UI Setup ---
         self.setup_styles()
         self.create_menu() # Create menu first
@@ -855,13 +878,73 @@ class CombinedApp:
 
         # --- Auto-Connect & Reconnect ---
         self.connect_to_aws()
-        # Consider starting auto-reconnect thread later or making it optional
-        # threading.Thread(target=self.auto_reconnect, daemon=True).start()
-
+        
         # --- Initial Status ---
         self.update_status_bar(f"{APP_TITLE} v{APP_VERSION} - Ready")
         self.update_aws_connection_display() # Update display based on initial connection attempt
 
+    def setup_system_tray(self):
+        """Setup system tray icon and menu"""
+        try:
+            import pystray
+            # Create a simple icon (you can replace this with your own icon file)
+            icon_size = 64
+            icon = Image.new('RGB', (icon_size, icon_size), color='blue')
+            self.tray_icon = ImageTk.PhotoImage(icon)
+            
+            # Create the system tray icon
+            self.icon = pystray.Icon(
+                "HotelBeacons",
+                icon,  # Use the PIL Image directly, not the PhotoImage
+                APP_TITLE,
+                menu=pystray.Menu(
+                    pystray.MenuItem("Show", self.show_window),
+                    pystray.MenuItem("Exit", self.quit_app)
+                )
+            )
+            
+            # Start the icon in a separate thread
+            self._icon_thread = threading.Thread(target=self.icon.run, daemon=True)
+            self._icon_thread.start()
+            
+            # Bind window close event to minimize to tray
+            self.root.protocol("WM_DELETE_WINDOW", self.on_window_close)
+            
+            # Keep a reference to prevent garbage collection
+            self._keep_alive = self.icon
+            
+        except ImportError:
+            print("pystray not installed. System tray functionality will be limited.")
+            messagebox.showwarning(
+                "System Tray Support Missing",
+                "The pystray package is not installed. System tray functionality will be limited.\n\n"
+                "Please install it using: pip install pystray pillow",
+                parent=self.root
+            )
+
+    def show_window(self):
+        """Show the main window"""
+        self.root.deiconify()
+        self.root.state('normal')
+        self.root.lift()
+        self.root.focus_force()
+
+    def hide_window(self):
+        """Hide the main window"""
+        self.root.withdraw()
+
+    def on_window_close(self):
+        """Handle window close event"""
+        # Just hide the window, don't destroy it
+        self.hide_window()
+
+    def quit_app(self):
+        """Properly quit the application"""
+        if messagebox.askyesno("Confirm Exit", 
+                              "Are you sure you want to exit?\nThis will stop all background processes."):
+            if hasattr(self, 'icon'):
+                self.icon.stop()
+            self.on_exit()
 
     def setup_styles(self):
         """Setup custom styles for the application"""
@@ -2856,50 +2939,43 @@ class CombinedApp:
         )
 
     def on_exit(self):
-        """Handle application exit gracefully"""
-        print("Exiting application...")
-        self.update_status_bar("Exiting...")
-        # Ensure disconnection from AWS
-        if self.aws_client and self.aws_client.connected:
-             print("Disconnecting from AWS IoT...")
-             # Run disconnect synchronously on exit? Might hang if network issue.
-             # Or give it a short timeout. Let's try synchronous for now.
-             try:
-                  if self.aws_client.disconnect():
-                       print("Disconnected successfully.")
-                  else:
-                       print("Disconnection error occurred.")
-             except Exception as e:
-                  print(f"Exception during disconnect: {e}")
-
+        """Clean up resources before exiting"""
+        global _instance_socket
+        
+        # Close the instance socket if it exists
+        if _instance_socket:
+            try:
+                _instance_socket.close()
+            except:
+                pass
+            _instance_socket = None
+        
+        # Disconnect from AWS if connected
+        if self.aws_client:
+            self.disconnect_from_aws()
+        
         # Close database connection
-        if self.db:
-            print("Closing database connection...")
+        if hasattr(self, 'db'):
             self.db.close()
-            print("Database closed.")
-
-        # Destroy the main window
+        
+        # Destroy the root window
         self.root.destroy()
-        print("Application closed.")
 
 # --- Main Execution ---
 # Add necessary imports for traceback
 import traceback
 
 def main():
-    """Main entry point for the application"""
+    # Check if another instance is already running
+    if is_already_running():
+        messagebox.showwarning("Application Already Running", 
+                              "Hotel Beacons is already running. Only one instance can run at a time.")
+        sys.exit(0)
+    
+    # Create the main window
     root = tk.Tk()
-    # Set application icon (optional, requires icon file)
-    # try:
-    #     # Needs a 'beacon_app.ico' or similar in the same directory
-    #     # icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "beacon_app.ico")
-    #     # if os.path.exists(icon_path): root.iconbitmap(icon_path)
-    #     pass
-    # except Exception as e:
-    #     print(f"Could not set window icon: {e}")
-
     app = CombinedApp(root)
-    root.protocol("WM_DELETE_WINDOW", app.on_exit) # Ensure clean exit on window close
+    # root.protocol("WM_DELETE_WINDOW", app.on_exit)  # <-- REMOVE THIS LINE
 
     # Show warning if SDK is missing
     if not AWS_IOT_AVAILABLE:
@@ -2909,7 +2985,7 @@ def main():
              "Please install it using: pip install awsiotsdk",
              parent=root # Attach to root window
          )
-
+    
     root.mainloop()
 
 if __name__ == "__main__":
