@@ -14,21 +14,35 @@ from tkinter import ttk, scrolledtext, messagebox, simpledialog, filedialog
 import sqlite3
 import uuid
 from PIL import Image, ImageTk  # Add this import for system tray icon
+import traceback
+import select  # Add for non-blocking socket
 
 # Global variable to store the socket
 _instance_socket = None
+
+# --- Single Instance Window Focus Logic ---
+SINGLETON_PORT = 12345
+SINGLETON_HOST = 'localhost'
+SINGLETON_MSG = b'SHOW'
 
 # Check if another instance is already running
 def is_already_running():
     global _instance_socket
     try:
-        # Try to create a socket on a specific port
         _instance_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        _instance_socket.bind(('localhost', 12345))
-        return False
+        _instance_socket.bind((SINGLETON_HOST, SINGLETON_PORT))
+        return False, _instance_socket
     except socket.error:
-        # If we can't bind to the port, another instance is running
-        return True
+        return True, None
+
+def notify_existing_instance():
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.connect((SINGLETON_HOST, SINGLETON_PORT))
+        s.sendall(SINGLETON_MSG)
+        s.close()
+    except Exception as e:
+        pass  # If we can't notify, just exit as before
 
 # Import AWS IoT SDK
 try:
@@ -2962,20 +2976,44 @@ class CombinedApp:
         self.root.destroy()
 
 # --- Main Execution ---
-# Add necessary imports for traceback
-import traceback
-
 def main():
     # Check if another instance is already running
-    if is_already_running():
-        messagebox.showwarning("Application Already Running", 
-                              "Hotel Beacons is already running. Only one instance can run at a time.")
+    is_running, sock = is_already_running()
+    if is_running:
+        notify_existing_instance()
         sys.exit(0)
-    
+
     # Create the main window
     root = tk.Tk()
     app = CombinedApp(root)
-    # root.protocol("WM_DELETE_WINDOW", app.on_exit)  # <-- REMOVE THIS LINE
+
+    # Start singleton listener thread
+    def singleton_listener():
+        sock.listen(1)
+        while True:
+            try:
+                conn, _ = sock.accept()
+                msg = conn.recv(16)
+                if msg == SINGLETON_MSG:
+                    # Bring window to front
+                    root.after(0, bring_window_to_front, root)
+                conn.close()
+            except Exception:
+                break  # Exit thread on error or close
+
+    def bring_window_to_front(root):
+        try:
+            root.deiconify()
+            root.lift()
+            root.focus_force()
+            root.attributes('-topmost', 1)
+            root.after(100, lambda: root.attributes('-topmost', 0))
+        except Exception:
+            pass
+
+    import threading
+    t = threading.Thread(target=singleton_listener, daemon=True)
+    t.start()
 
     # Show warning if SDK is missing
     if not AWS_IOT_AVAILABLE:
@@ -2985,7 +3023,7 @@ def main():
              "Please install it using: pip install awsiotsdk",
              parent=root # Attach to root window
          )
-    
+
     root.mainloop()
 
 if __name__ == "__main__":
