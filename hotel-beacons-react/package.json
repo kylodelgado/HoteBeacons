@@ -22,7 +22,6 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "@tailwindcss/postcss": "^4.1.11",
     "date-fns": "^2.30.0",
     "lucide-react": "^0.294.0",
     "react": "^18.2.0",
