@@ -11,7 +11,6 @@ import {
 } from 'lucide-react';
 import { TabType } from './types';
 import { useBeaconData } from './hooks/useBeaconData';
-import { getConnectionStatusColor } from './utils';
 
 // Import components (we'll create these next)
 import Dashboard from './components/Dashboard';
@@ -107,40 +106,53 @@ function App() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen">
       {/* Header */}
-      <header className="bg-white shadow-sm border-b border-gray-200">
+      <header className="header-glass sticky top-0 z-40">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between items-center h-16">
-            <div className="flex items-center">
-              <Radio className="h-8 w-8 text-primary-600 mr-3" />
+          <div className="flex justify-between items-center h-20">
+            <div className="flex items-center space-x-4">
+              <div className="glow-effect">
+                <div className="bg-gradient-to-r from-blue-600 to-indigo-600 p-3 rounded-2xl shadow-lg">
+                  <Radio className="h-8 w-8 text-white" />
+                </div>
+              </div>
               <div>
-                <h1 className="text-xl font-bold text-gray-900">
+                <h1 className="text-2xl font-bold gradient-text">
                   Hotel Beacon Management System
                 </h1>
-                <p className="text-sm text-gray-500">v2.0 - React Demo</p>
+                <p className="text-sm text-gray-600 font-medium">v2.0 - Professional Demo</p>
               </div>
             </div>
             
-            <div className="flex items-center space-x-4">
+            <div className="flex items-center space-x-6">
               <button
                 onClick={refreshData}
                 disabled={isLoading}
-                className="btn btn-secondary flex items-center"
+                className="btn btn-secondary flex items-center group"
               >
-                <RefreshCw className={`h-4 w-4 mr-2 ${isLoading ? 'animate-spin' : ''}`} />
+                <RefreshCw className={`h-4 w-4 mr-2 transition-transform duration-200 ${isLoading ? 'animate-spin' : 'group-hover:rotate-180'}`} />
                 Refresh
               </button>
               
-              <div className="flex items-center space-x-2">
+              <div className={`connection-indicator ${
+                connectionStatus.isConnected 
+                  ? 'connection-connected' 
+                  : connectionStatus.status === 'Connecting...'
+                  ? 'connection-connecting'
+                  : 'connection-disconnected'
+              }`}>
                 {connectionStatus.isConnected ? (
-                  <Wifi className="h-5 w-5 text-green-600" />
+                  <Wifi className="h-4 w-4" />
                 ) : (
-                  <WifiOff className="h-5 w-5 text-red-600" />
+                  <WifiOff className="h-4 w-4" />
                 )}
-                <span className={`text-sm font-medium ${getConnectionStatusColor(connectionStatus.status)}`}>
+                <span className="font-semibold">
                   {connectionStatus.status}
                 </span>
+                {connectionStatus.isConnected && (
+                  <div className="status-dot-active pulse-dot"></div>
+                )}
               </div>
             </div>
           </div>
@@ -148,9 +160,9 @@ function App() {
       </header>
 
       {/* Navigation */}
-      <nav className="bg-white border-b border-gray-200">
+      <nav className="bg-white/60 backdrop-blur-md border-b border-white/20 shadow-sm">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex space-x-8">
+          <div className="flex space-x-2">
             {tabs.map((tab) => {
               const Icon = tab.icon;
               const isActive = activeTab === tab.id;
@@ -159,19 +171,13 @@ function App() {
                 <button
                   key={tab.id}
                   onClick={() => setActiveTab(tab.id)}
-                  className={`
-                    flex items-center px-3 py-4 text-sm font-medium border-b-2 transition-colors
-                    ${isActive
-                      ? 'border-primary-500 text-primary-600'
-                      : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                    }
-                  `}
+                  className={`nav-tab ${isActive ? 'nav-tab-active' : 'nav-tab-inactive'} relative z-10`}
                 >
-                  <Icon className="h-4 w-4 mr-2" />
-                  {tab.label}
-                  {/* Badge for alerts */}
+                  <Icon className="h-5 w-5 mr-3" />
+                  <span>{tab.label}</span>
+                  {/* Enhanced badge for alerts */}
                   {tab.id === 'alerts' && alarmHistory.filter(a => !a.acknowledged).length > 0 && (
-                    <span className="ml-2 bg-red-100 text-red-800 text-xs font-medium px-2.5 py-0.5 rounded-full">
+                    <span className="ml-3 bg-gradient-to-r from-red-500 to-rose-600 text-white text-xs font-bold px-2.5 py-1 rounded-full shadow-lg animate-pulse">
                       {alarmHistory.filter(a => !a.acknowledged).length}
                     </span>
                   )}
@@ -183,21 +189,39 @@ function App() {
       </nav>
 
       {/* Main Content */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {renderTabContent()}
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
+        <div className="relative">
+          {renderTabContent()}
+        </div>
       </main>
 
-      {/* Footer */}
-      <footer className="bg-white border-t border-gray-200 mt-12">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
-          <div className="flex justify-between items-center text-sm text-gray-500">
+      {/* Enhanced Footer */}
+      <footer className="bg-gradient-to-r from-gray-50 to-blue-50/50 border-t border-white/20 mt-16">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
             <div>
-              <p>Hotel Beacon Management System - React Demo Component</p>
-              <p>Simulating real-time beacon monitoring and management</p>
+              <h3 className="text-lg font-semibold gradient-text mb-2">
+                Hotel Beacon Management System
+              </h3>
+              <p className="text-gray-600 mb-2">Professional React Demo Component</p>
+              <p className="text-sm text-gray-500">
+                Simulating real-time beacon monitoring and management with modern web technologies
+              </p>
             </div>
             <div className="text-right">
-              <p>Statistics: {statistics.totalBeacons} beacons, {statistics.activeBeacons} active</p>
-              <p>Last updated: {new Date().toLocaleTimeString()}</p>
+              <div className="grid grid-cols-2 gap-4 mb-4">
+                <div className="card p-4">
+                  <div className="text-2xl font-bold gradient-text">{statistics.totalBeacons}</div>
+                  <div className="text-sm text-gray-600">Total Beacons</div>
+                </div>
+                <div className="card p-4">
+                  <div className="text-2xl font-bold text-emerald-600">{statistics.activeBeacons}</div>
+                  <div className="text-sm text-gray-600">Active Now</div>
+                </div>
+              </div>
+              <p className="text-sm text-gray-500">
+                Last updated: {new Date().toLocaleTimeString()}
+              </p>
             </div>
           </div>
         </div>
